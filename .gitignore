@@ -1,0 +1,11 @@
+.env
+run.bat
+.venv
+__pycache__/
+.pytest_cache/
+pytest-cache-files-*/
+chat_logs/
+chat_logs_test/
+session_store.json
+tests_runtime/
+*.pyc

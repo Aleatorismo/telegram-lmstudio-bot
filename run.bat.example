@@ -1,0 +1,12 @@
+@echo off
+
+rem Activate the conda environment for this project.
+rem If conda is not available in this shell, initialize conda first or use an
+rem absolute path that is specific to your machine in your local run.bat.
+call conda activate telegram-lmstudio-bot
+
+rem Start the bot.
+python main.py
+
+rem Keep the command window open after the bot exits.
+cmd
