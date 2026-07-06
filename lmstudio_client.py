@@ -28,6 +28,7 @@ class LMStudioClient:
             "max_tokens": self._settings.lmstudio_max_tokens,
             "stream": False,
         }
+        self._apply_optional_sampling_params(payload)
 
         timeout = httpx.Timeout(
             connect=10.0,
@@ -65,6 +66,17 @@ class LMStudioClient:
         if not isinstance(content, str) or not content.strip():
             raise LMStudioError("LM Studio returned an empty message.")
         return content.strip()
+
+    def _apply_optional_sampling_params(self, payload: dict[str, Any]) -> None:
+        optional_params = {
+            "top_p": self._settings.lmstudio_top_p,
+            "top_k": self._settings.lmstudio_top_k,
+            "min_p": self._settings.lmstudio_min_p,
+            "presence_penalty": self._settings.lmstudio_presence_penalty,
+        }
+        for key, value in optional_params.items():
+            if value is not None:
+                payload[key] = value
 
 
 def _extract_error_message(response: httpx.Response) -> str:

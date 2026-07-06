@@ -20,6 +20,10 @@ class Settings:
     lmstudio_system_prompt: str
     lmstudio_temperature: float
     lmstudio_max_tokens: int
+    lmstudio_top_p: float | None
+    lmstudio_top_k: int | None
+    lmstudio_min_p: float | None
+    lmstudio_presence_penalty: float | None
     max_history_messages: int
     no_proxy: str
     chat_log_dir: str
@@ -51,10 +55,30 @@ def _get_float(name: str, default: float) -> float:
         raise ConfigError(f"{name} must be a float.") from exc
 
 
+def _get_optional_float(name: str) -> float | None:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a float.") from exc
+
+
 def _get_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
         return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be an integer.") from exc
+
+
+def _get_optional_int(name: str) -> int | None:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return None
     try:
         return int(raw)
     except ValueError as exc:
@@ -98,6 +122,10 @@ def load_settings() -> Settings:
         ).strip(),
         lmstudio_temperature=_get_float("LMSTUDIO_TEMPERATURE", 0.7),
         lmstudio_max_tokens=_get_int("LMSTUDIO_MAX_TOKENS", 1024),
+        lmstudio_top_p=_get_optional_float("LMSTUDIO_TOP_P"),
+        lmstudio_top_k=_get_optional_int("LMSTUDIO_TOP_K"),
+        lmstudio_min_p=_get_optional_float("LMSTUDIO_MIN_P"),
+        lmstudio_presence_penalty=_get_optional_float("LMSTUDIO_PRESENCE_PENALTY"),
         max_history_messages=_get_int("MAX_HISTORY_MESSAGES", 20),
         no_proxy=os.getenv("NO_PROXY", "127.0.0.1,localhost").strip(),
         chat_log_dir=os.getenv("CHAT_LOG_DIR", "chat_logs").strip(),
@@ -113,6 +141,8 @@ def load_settings() -> Settings:
         raise ConfigError("MAX_HISTORY_MESSAGES must be at least 2.")
     if settings.lmstudio_max_tokens < 1:
         raise ConfigError("LMSTUDIO_MAX_TOKENS must be positive.")
+    if settings.lmstudio_top_k is not None and settings.lmstudio_top_k < 0:
+        raise ConfigError("LMSTUDIO_TOP_K must not be negative.")
     if settings.lmstudio_timeout < 1:
         raise ConfigError("LMSTUDIO_TIMEOUT must be positive.")
     if settings.telegram_typing_interval <= 0:
