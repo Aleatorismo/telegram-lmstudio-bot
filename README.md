@@ -12,6 +12,7 @@
 - 推理期间持续显示 `typing...`
 - 所有成功对话都会按用户写入本地可读文本日志
 - 会话记忆会写入本地状态文件，程序重启后仍然保留
+- Telegram 代理短暂中断后会自动清理并重建 Bot 应用
 
 ## 目录结构
 
@@ -113,6 +114,8 @@ python main.py
 - 提示 Telegram 网络错误：
   - 确认本机代理 `http://127.0.0.1:7890` 已启动
   - 确认代理支持 HTTP 代理，而不只是 SOCKS
+  - 如果日志里出现连续 `502 Bad Gateway`，通常是代理或上游节点临时异常；程序会在达到阈值后清理当前 Telegram Application 并重建
+  - 如果出现 `ExtBot is not properly initialized` 或 `Application is not initialized`，程序会把它当作可恢复的 Telegram 生命周期状态异常并重新创建 Bot 应用
 - 提示 LM Studio 无法连接：
   - 确认 LM Studio 本地服务已启动
   - 确认 `LMSTUDIO_BASE_URL` 正确，默认是 `http://127.0.0.1:1234/v1`
