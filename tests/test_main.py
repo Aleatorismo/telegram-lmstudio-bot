@@ -16,7 +16,8 @@ def test_run_bot_polling_keeps_event_loop_open_for_restart() -> None:
 
     run_bot_polling(app)
 
-    assert app.calls == [{"drop_pending_updates": True, "close_loop": False}]
+    assert app.calls == [{"drop_pending_updates": True, "close_loop": False,
+                          "allowed_updates": ["message"]}]
 
 
 class CleanupApp:

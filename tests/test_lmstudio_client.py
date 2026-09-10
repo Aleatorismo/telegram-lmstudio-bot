@@ -1,65 +1,83 @@
-from __future__ import annotations
-
+import asyncio
+import json
 from types import SimpleNamespace
 
-from lmstudio_client import LMStudioClient
+import httpx
+import pytest
+
+from lmstudio_client import LMStudioClient, LMStudioError
+from model_store import PARAMETERS
 
 
-def test_optional_sampling_params_are_omitted_when_unset() -> None:
-    settings = SimpleNamespace(
-        lmstudio_base_url="http://127.0.0.1:1234/v1",
-        lmstudio_system_prompt="system",
-        lmstudio_model="model",
-        lmstudio_temperature=0.7,
-        lmstudio_max_tokens=1024,
-        lmstudio_top_p=None,
-        lmstudio_top_k=None,
-        lmstudio_min_p=None,
-        lmstudio_presence_penalty=None,
-    )
-
-    client = LMStudioClient(settings)
-    payload = {
-        "model": settings.lmstudio_model,
-        "messages": [],
-        "temperature": settings.lmstudio_temperature,
-        "max_tokens": settings.lmstudio_max_tokens,
-        "stream": False,
-    }
-
-    client._apply_optional_sampling_params(payload)
-
-    assert "top_p" not in payload
-    assert "top_k" not in payload
-    assert "min_p" not in payload
-    assert "presence_penalty" not in payload
+def client_with_transport(monkeypatch, handler):
+    original = httpx.AsyncClient
+    def factory(**kwargs):
+        assert kwargs['trust_env'] is False
+        return original(**kwargs, transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(httpx, 'AsyncClient', factory)
+    return LMStudioClient(SimpleNamespace(lmstudio_base_url='http://localhost:1234/v1',
+        lmstudio_system_prompt='system', lmstudio_model='default', lmstudio_timeout=30))
 
 
-def test_optional_sampling_params_are_added_when_set() -> None:
-    settings = SimpleNamespace(
-        lmstudio_base_url="http://127.0.0.1:1234/v1",
-        lmstudio_system_prompt="system",
-        lmstudio_model="model",
-        lmstudio_temperature=0.7,
-        lmstudio_max_tokens=1024,
-        lmstudio_top_p=0.9,
-        lmstudio_top_k=40,
-        lmstudio_min_p=0.05,
-        lmstudio_presence_penalty=0.3,
-    )
+@pytest.mark.parametrize('parameters', [{}, dict.fromkeys(PARAMETERS), {k: '' for k in PARAMETERS}])
+def test_defaults_are_omitted(monkeypatch, parameters):
+    def handler(request):
+        body = json.loads(request.content)
+        assert request.url.path == '/v1/chat/completions'
+        assert body == {'model': 'chosen', 'messages': [
+            {'role': 'system', 'content': 'system'}, {'role': 'user', 'content': 'hello'}], 'stream': False}
+        return httpx.Response(200, json={'choices': [{'message': {'content': 'answer'}}]})
+    client = client_with_transport(monkeypatch, handler)
+    assert asyncio.run(client.chat([], 'hello', model='chosen', parameters=parameters)) == 'answer'
 
-    client = LMStudioClient(settings)
-    payload = {
-        "model": settings.lmstudio_model,
-        "messages": [],
-        "temperature": settings.lmstudio_temperature,
-        "max_tokens": settings.lmstudio_max_tokens,
-        "stream": False,
-    }
 
-    client._apply_optional_sampling_params(payload)
+@pytest.mark.parametrize('effort', ['none', 'medium', 'high'])
+def test_model_sampling_reasoning_and_history_reach_api(monkeypatch, effort):
+    params = dict(zip(PARAMETERS, [0, 4096, 0.95, 40, 0, -0.3]))
+    def handler(request):
+        body = json.loads(request.content)
+        assert all(body[k] == v for k, v in params.items())
+        assert body['reasoning_effort'] == effort
+        assert body['model'] == 'chosen'
+        assert body['messages'][1] == {'role': 'assistant', 'content': 'previous'}
+        return httpx.Response(200, json={'choices': [{'message': {'content': 'answer'}}]})
+    client = client_with_transport(monkeypatch, handler)
+    asyncio.run(client.chat([{'role': 'assistant', 'content': 'previous'}], 'hi',
+                            model='chosen', parameters=params, reasoning_effort=effort))
 
-    assert payload["top_p"] == 0.9
-    assert payload["top_k"] == 40
-    assert payload["min_p"] == 0.05
-    assert payload["presence_penalty"] == 0.3
+
+def test_native_discovery_types_and_embedding_filter(monkeypatch):
+    def handler(request):
+        assert request.url.path == '/api/v1/models'
+        return httpx.Response(200, json={'models': [
+            {'key': 'both', 'type': 'llm', 'capabilities': {'reasoning': {'allowed_options': ['on', 'off']}}},
+            {'key': 'only', 'type': 'llm', 'capabilities': {'reasoning': {'allowed_options': ['low', 'high'], 'default': 'high'}}},
+            {'key': 'plain', 'type': 'llm', 'capabilities': {}},
+            {'key': 'embed', 'type': 'embedding'},
+        ]})
+    models = asyncio.run(client_with_transport(monkeypatch, handler).list_models())
+    assert [m['type'] for m in models] == ['both', 'thinking', 'non_thinking']
+    assert models[1]['thinking_effort'] == 'high'
+
+
+def test_catalog_fallback(monkeypatch):
+    paths = []
+    def handler(request):
+        paths.append(request.url.path)
+        if request.url.path != '/v1/models':
+            return httpx.Response(404)
+        return httpx.Response(200, json={'data': [{'id': 'old'}]})
+    assert asyncio.run(client_with_transport(monkeypatch, handler).list_models())[0]['type'] == 'unknown'
+    assert paths == ['/api/v1/models', '/api/v0/models', '/v1/models']
+
+
+def test_unavailable_catalog(monkeypatch):
+    client = client_with_transport(monkeypatch, lambda r: httpx.Response(503))
+    with pytest.raises(LMStudioError):
+        asyncio.run(client.list_models())
+
+
+def test_malformed_chat_response(monkeypatch):
+    client = client_with_transport(monkeypatch, lambda r: httpx.Response(200, text='not json'))
+    with pytest.raises(LMStudioError):
+        asyncio.run(client.chat([], 'hi'))

@@ -40,6 +40,24 @@ class SessionStore:
             self._messages.pop(user_id, None)
             self._save_messages()
 
+    def undo_last_turn(self, user_id: int) -> bool:
+        """Remove only this user's latest retained turn, atomically and persistently."""
+        with self._lock:
+            history = self._messages.get(user_id)
+            if not history:
+                return False
+            # History limits can leave an orphan assistant item at the beginning.
+            # Remove that remaining fragment when no user item is left.
+            start = next((i for i in range(len(history) - 1, -1, -1)
+                          if history[i]["role"] == "user"), 0)
+            self._messages[user_id] = history[:start]
+            try:
+                self._save_messages()
+            except Exception:
+                self._messages[user_id] = history
+                raise
+            return True
+
     def _load_messages(self) -> dict[int, list[Message]]:
         if not self._storage_path.exists():
             return {}

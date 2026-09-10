@@ -12,6 +12,7 @@ class ChatLogEntry:
     display_name: str
     user_message: str
     assistant_message: str
+    reasoning_message: str = ""
 
 
 class ChatLogger:
@@ -28,7 +29,8 @@ class ChatLogger:
         content = (
             f"[{timestamp}]\n"
             f"User ({entry.display_name}):\n{entry.user_message.rstrip()}\n\n"
-            f"Assistant:\n{entry.assistant_message.rstrip()}\n"
+            + (f"Thinking:\n{entry.reasoning_message.rstrip()}\n\n" if entry.reasoning_message else "")
+            + f"Assistant:\n{entry.assistant_message.rstrip()}\n"
             f"{'=' * 60}\n\n"
         )
         with log_path.open("a", encoding="utf-8", newline="\n") as handle:

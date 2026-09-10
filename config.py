@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -18,21 +19,18 @@ class Settings:
     lmstudio_base_url: str
     lmstudio_model: str
     lmstudio_system_prompt: str
-    lmstudio_temperature: float
-    lmstudio_max_tokens: int
-    lmstudio_top_p: float | None
-    lmstudio_top_k: int | None
-    lmstudio_min_p: float | None
-    lmstudio_presence_penalty: float | None
     max_history_messages: int
     no_proxy: str
     chat_log_dir: str
     session_store_path: str
+    model_profiles_path: str = "model_profiles.json"
+    model_selections_path: str = "model_selections.json"
     telegram_connect_timeout: float = 15.0
     telegram_read_timeout: float = 30.0
     telegram_write_timeout: float = 30.0
     lmstudio_timeout: float = 900.0
     telegram_typing_interval: float = 4.0
+    telegram_draft_interval: float = 1.0
     telegram_network_error_threshold: int = 4
     telegram_network_error_window: float = 120.0
     telegram_restart_delay: float = 3.0
@@ -55,30 +53,10 @@ def _get_float(name: str, default: float) -> float:
         raise ConfigError(f"{name} must be a float.") from exc
 
 
-def _get_optional_float(name: str) -> float | None:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
-        return None
-    try:
-        return float(raw)
-    except ValueError as exc:
-        raise ConfigError(f"{name} must be a float.") from exc
-
-
 def _get_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
         return default
-    try:
-        return int(raw)
-    except ValueError as exc:
-        raise ConfigError(f"{name} must be an integer.") from exc
-
-
-def _get_optional_int(name: str) -> int | None:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
-        return None
     try:
         return int(raw)
     except ValueError as exc:
@@ -115,23 +93,20 @@ def load_settings() -> Settings:
         telegram_bot_token=_require_env("TELEGRAM_BOT_TOKEN"),
         telegram_proxy=_validate_url("TELEGRAM_PROXY", telegram_proxy),
         lmstudio_base_url=lmstudio_base_url,
-        lmstudio_model=_require_env("LMSTUDIO_MODEL"),
+        lmstudio_model=os.getenv("LMSTUDIO_MODEL", "").strip(),
         lmstudio_system_prompt=os.getenv(
             "LMSTUDIO_SYSTEM_PROMPT",
             "You are a helpful assistant running locally through LM Studio.",
         ).strip(),
-        lmstudio_temperature=_get_float("LMSTUDIO_TEMPERATURE", 0.7),
-        lmstudio_max_tokens=_get_int("LMSTUDIO_MAX_TOKENS", 1024),
-        lmstudio_top_p=_get_optional_float("LMSTUDIO_TOP_P"),
-        lmstudio_top_k=_get_optional_int("LMSTUDIO_TOP_K"),
-        lmstudio_min_p=_get_optional_float("LMSTUDIO_MIN_P"),
-        lmstudio_presence_penalty=_get_optional_float("LMSTUDIO_PRESENCE_PENALTY"),
         max_history_messages=_get_int("MAX_HISTORY_MESSAGES", 20),
         no_proxy=os.getenv("NO_PROXY", "127.0.0.1,localhost").strip(),
         chat_log_dir=os.getenv("CHAT_LOG_DIR", "chat_logs").strip(),
+        model_profiles_path=os.getenv("MODEL_PROFILES_PATH", "model_profiles.json").strip(),
+        model_selections_path=os.getenv("MODEL_SELECTIONS_PATH", "model_selections.json").strip(),
         session_store_path=os.getenv("SESSION_STORE_PATH", "session_store.json").strip(),
         lmstudio_timeout=_get_float("LMSTUDIO_TIMEOUT", 900.0),
         telegram_typing_interval=_get_float("TELEGRAM_TYPING_INTERVAL", 4.0),
+        telegram_draft_interval=_get_float("TELEGRAM_DRAFT_INTERVAL", 1.0),
         telegram_network_error_threshold=_get_int("TELEGRAM_NETWORK_ERROR_THRESHOLD", 4),
         telegram_network_error_window=_get_float("TELEGRAM_NETWORK_ERROR_WINDOW", 120.0),
         telegram_restart_delay=_get_float("TELEGRAM_RESTART_DELAY", 3.0),
@@ -139,14 +114,14 @@ def load_settings() -> Settings:
 
     if settings.max_history_messages < 2:
         raise ConfigError("MAX_HISTORY_MESSAGES must be at least 2.")
-    if settings.lmstudio_max_tokens < 1:
-        raise ConfigError("LMSTUDIO_MAX_TOKENS must be positive.")
-    if settings.lmstudio_top_k is not None and settings.lmstudio_top_k < 0:
-        raise ConfigError("LMSTUDIO_TOP_K must not be negative.")
+    if not settings.model_profiles_path or not settings.model_selections_path:
+        raise ConfigError("Model profile and selection paths must not be empty.")
     if settings.lmstudio_timeout < 1:
         raise ConfigError("LMSTUDIO_TIMEOUT must be positive.")
     if settings.telegram_typing_interval <= 0:
         raise ConfigError("TELEGRAM_TYPING_INTERVAL must be positive.")
+    if not math.isfinite(settings.telegram_draft_interval) or not 0.5 <= settings.telegram_draft_interval <= 10:
+        raise ConfigError("TELEGRAM_DRAFT_INTERVAL must be between 0.5 and 10 seconds.")
     if not settings.chat_log_dir:
         raise ConfigError("CHAT_LOG_DIR must not be empty.")
     if not settings.session_store_path:

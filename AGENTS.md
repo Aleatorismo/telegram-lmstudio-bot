@@ -81,22 +81,45 @@ One completed turn typically adds two items:
 
 ## LM Studio Request Shape
 
-Base payload always includes:
+Live chat payload always includes `model`, `messages`, and `stream: true`.
+`LMStudioClient.chat` remains a non-streaming helper; Telegram uses `stream_chat`.
+All six sampling parameters (`temperature`, `max_tokens`, `top_p`, `top_k`,
+`min_p`, `presence_penalty`) come from `model_profiles.json`, keyed by model ID
+and `thinking` / `non_thinking` mode. Missing, null, or blank values are omitted.
+Legacy sampling environment variables are ignored.
 
-- `model`
-- `messages`
-- `temperature`
-- `max_tokens`
-- `stream: false`
+`model_store.py` reloads editable profiles per operation and atomically persists
+profile edits and per-user choices (`model_selections.json`). Types are
+`non_thinking`, `thinking`, or `both`; unknown legacy capabilities must be
+configured explicitly. New model selections prefer thinking when supported.
+`LMSTUDIO_MODEL` is an optional initial model, not a fixed request model.
 
-Optional sampling parameters are only sent when configured and non-empty:
+`/model`, `/think`, `/settings`, and `/params` manage these settings in private
+chats. All bot command replies are English. Model presets are shared, while
+user model/mode selections are isolated and persist across restarts. Switching
+models preserves history. `/reset` only clears conversation memory.
 
-- `top_p`
-- `top_k`
-- `min_p`
-- `presence_penalty`
+Discovery tries `/api/v1/models`, `/api/v0/models`, then `/v1/models`, and falls
+back to locally saved profiles. Native v1 reasoning metadata supplies model
+types. Existing explicit local profiles are not overwritten by discovery.
+Reasoning is sent as `reasoning_effort` (`none` for off, configured strength for
+on, normally `medium`). Non-thinking-only models omit this field.
 
-If these are unset in `.env`, they are omitted from the payload entirely so LM Studio preset values remain in effect.
+## Streaming and Rich Replies
+
+- `generation.py` runs one background generation per user, preserving serial command handling.
+- `rich_output.py` streams bounded rich drafts and persists completed pages. Reasoning
+  is escaped italic text inside collapsed details; literal fallback also uses italic RichText.
+- User-facing cancellation is removed: no stop commands, buttons, callbacks or stop update hooks.
+  Drafts explicitly set can_stop=false. Polling only subscribes to message updates.
+- Normal shutdown/restart and timeout cleanup still closes inference connections.
+- `/undo` removes the current user's last retained turn from SESSION_STORE_PATH. It accepts
+  no arguments, never deletes Telegram messages, and leaves transcript logs and presets unchanged.
+  Repeated calls walk back through stored turns, including a truncated oldest fragment.
+- `/undo` and `/reset` reject requests while that user's generation is active to avoid stale writes.
+- Keep per-user isolation and atomic persistence under the session-store lock. Undo rolls back
+  its in-memory mutation if persistence fails.
+- Draft interval defaults to 1 second. Preserve rich page budgets, format fallbacks and retry rules.
 
 ## Telegram Networking Rules
 
@@ -137,7 +160,6 @@ Important implementation detail:
 Required:
 
 - `TELEGRAM_BOT_TOKEN`
-- `LMSTUDIO_MODEL`
 - Telegram proxy via `TELEGRAM_PROXY` or `HTTP_PROXY` / `HTTPS_PROXY`
 
 Important defaults:

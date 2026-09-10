@@ -9,3 +9,5 @@ chat_logs_test/
 session_store.json
 tests_runtime/
 *.pyc
+
+model_selections.json

@@ -41,28 +41,29 @@ def test_load_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.chat_log_dir == "chat_logs"
     assert settings.session_store_path == "session_store.json"
     assert settings.lmstudio_timeout == 900.0
-    assert settings.lmstudio_top_p is None
-    assert settings.lmstudio_top_k is None
-    assert settings.lmstudio_min_p is None
-    assert settings.lmstudio_presence_penalty is None
     assert settings.telegram_typing_interval == 4.0
+    assert settings.telegram_draft_interval == 1.0
     assert settings.telegram_network_error_threshold == 4
     assert settings.telegram_network_error_window == 120.0
     assert settings.telegram_restart_delay == 3.0
 
 
-def test_load_settings_optional_sampling_params(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_legacy_sampling_env_is_ignored(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
-    monkeypatch.setenv("LMSTUDIO_MODEL", "local-model")
-    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7890")
-    monkeypatch.setenv("LMSTUDIO_TOP_P", "0.9")
-    monkeypatch.setenv("LMSTUDIO_TOP_K", "40")
-    monkeypatch.setenv("LMSTUDIO_MIN_P", "0.05")
-    monkeypatch.setenv("LMSTUDIO_PRESENCE_PENALTY", "0.3")
-
+    monkeypatch.setenv("LMSTUDIO_MODEL", "")
+    monkeypatch.setenv("TELEGRAM_PROXY", "http://127.0.0.1:7890")
+    monkeypatch.setenv("LMSTUDIO_TEMPERATURE", "invalid")
+    monkeypatch.setenv("LMSTUDIO_MAX_TOKENS", "invalid")
     settings = load_settings()
+    assert settings.lmstudio_model == ""
+    assert settings.model_profiles_path == "model_profiles.json"
+    assert not hasattr(settings, "lmstudio_temperature")
 
-    assert settings.lmstudio_top_p == 0.9
-    assert settings.lmstudio_top_k == 40
-    assert settings.lmstudio_min_p == 0.05
-    assert settings.lmstudio_presence_penalty == 0.3
+
+@pytest.mark.parametrize('interval', ['0', '0.1', '11', 'nan', 'inf'])
+def test_invalid_draft_interval(monkeypatch, interval):
+    monkeypatch.setenv('TELEGRAM_BOT_TOKEN', 'token')
+    monkeypatch.setenv('TELEGRAM_PROXY', 'http://127.0.0.1:7890')
+    monkeypatch.setenv('TELEGRAM_DRAFT_INTERVAL', interval)
+    with pytest.raises(ConfigError, match='TELEGRAM_DRAFT_INTERVAL'):
+        load_settings()

@@ -1,0 +1,124 @@
+{
+  "models": {
+    "qwen3.8-27b-uncensored": {
+      "type": "both",
+      "thinking_effort": "medium",
+      "thinking": {
+        "temperature": null,
+        "max_tokens": null,
+        "top_p": null,
+        "top_k": null,
+        "min_p": null,
+        "presence_penalty": null
+      },
+      "non_thinking": {
+        "temperature": null,
+        "max_tokens": null,
+        "top_p": null,
+        "top_k": null,
+        "min_p": null,
+        "presence_penalty": null
+      }
+    },
+    "qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive": {
+      "type": "both",
+      "thinking_effort": "medium",
+      "thinking": {
+        "temperature": null,
+        "max_tokens": null,
+        "top_p": null,
+        "top_k": null,
+        "min_p": null,
+        "presence_penalty": null
+      },
+      "non_thinking": {
+        "temperature": null,
+        "max_tokens": null,
+        "top_p": null,
+        "top_k": null,
+        "min_p": null,
+        "presence_penalty": null
+      }
+    },
+    "hy-mt2-1.8b": {
+      "type": "non_thinking",
+      "thinking_effort": "medium",
+      "thinking": {
+        "temperature": null,
+        "max_tokens": null,
+        "top_p": null,
+        "top_k": null,
+        "min_p": null,
+        "presence_penalty": null
+      },
+      "non_thinking": {
+        "temperature": null,
+        "max_tokens": null,
+        "top_p": null,
+        "top_k": null,
+        "min_p": null,
+        "presence_penalty": null
+      }
+    },
+    "google/gemma-4-26b-a4b": {
+      "type": "both",
+      "thinking_effort": "medium",
+      "thinking": {
+        "temperature": null,
+        "max_tokens": null,
+        "top_p": null,
+        "top_k": null,
+        "min_p": null,
+        "presence_penalty": null
+      },
+      "non_thinking": {
+        "temperature": null,
+        "max_tokens": null,
+        "top_p": null,
+        "top_k": null,
+        "min_p": null,
+        "presence_penalty": null
+      }
+    },
+    "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive": {
+      "type": "both",
+      "thinking_effort": "medium",
+      "thinking": {
+        "temperature": null,
+        "max_tokens": null,
+        "top_p": null,
+        "top_k": null,
+        "min_p": null,
+        "presence_penalty": null
+      },
+      "non_thinking": {
+        "temperature": null,
+        "max_tokens": null,
+        "top_p": null,
+        "top_k": null,
+        "min_p": null,
+        "presence_penalty": null
+      }
+    },
+    "qwen/qwen3.5-9b": {
+      "type": "both",
+      "thinking_effort": "medium",
+      "thinking": {
+        "temperature": null,
+        "max_tokens": null,
+        "top_p": null,
+        "top_k": null,
+        "min_p": null,
+        "presence_penalty": null
+      },
+      "non_thinking": {
+        "temperature": null,
+        "max_tokens": null,
+        "top_p": null,
+        "top_k": null,
+        "min_p": null,
+        "presence_penalty": null
+      }
+    }
+  }
+}

@@ -14,6 +14,7 @@ from config import ConfigError, load_settings
 from lmstudio_client import LMStudioClient
 from session_store import SessionStore
 from telegram_bot import build_application
+from generation import shutdown_generations
 
 
 def configure_logging() -> None:
@@ -25,7 +26,8 @@ def configure_logging() -> None:
 
 def run_bot_polling(app: object) -> None:
     # Keep the event loop alive so the outer restart loop can safely create a fresh Application.
-    app.run_polling(drop_pending_updates=True, close_loop=False)
+    app.run_polling(drop_pending_updates=True, close_loop=False,
+                    allowed_updates=["message"])
 
 
 def cleanup_application(app: object, logger: logging.Logger) -> None:
@@ -46,6 +48,7 @@ def cleanup_application(app: object, logger: logging.Logger) -> None:
 
 
 async def _cleanup_application(app: object, logger: logging.Logger) -> None:
+    await shutdown_generations(app)
     if getattr(app, "running", False):
         try:
             await app.stop()
