@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+from uuid import uuid4
 from contextlib import aclosing
 from dataclasses import dataclass
 
@@ -82,13 +83,16 @@ async def run_generation(job: Generation, application, bot, *, user_message: str
         if status:
             buffer.append("answer", "\n\n[" + status + "]")
         await output.publish(final=True)
-        # Only displayed answer text is context; never feed reasoning back as an answer.
+        # Store reasoning separately; the next request's profile controls its replay.
+        turn_id = uuid4().hex
         if answer.strip() and not error:
-            data["session_store"].append_exchange(job.user_id, user_message, answer)
+            data["session_store"].append_exchange(job.user_id, user_message, answer,
+                turn_id=turn_id, reasoning_content=reasoning)
         data["chat_logger"].append_exchange(ChatLogEntry(
             user_id=job.user_id, display_name=display_name, user_message=user_message,
             assistant_message=answer + ("\n\n[" + status + "]" if status else ""),
             reasoning_message=reasoning,
+            turn_id=turn_id,
         ))
     except asyncio.CancelledError:
         raise

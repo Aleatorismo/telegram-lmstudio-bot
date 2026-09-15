@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any
 
 
-PARAMETERS = ("temperature", "max_tokens", "top_p", "top_k", "min_p", "presence_penalty")
+SAMPLING_PARAMETERS = ("temperature", "max_tokens", "top_p", "top_k", "min_p", "presence_penalty",
+                       "repetition_penalty")
+PARAMETERS = (*SAMPLING_PARAMETERS, "repeat_penalty", "reasoning_effort", "chat_template_kwargs")
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
+TEMPLATE_PARAMETERS = ("enable_thinking", "preserve_thinking")
 MODEL_TYPES = ("non_thinking", "thinking", "both", "unknown")
 
 
@@ -24,6 +28,31 @@ def sampling_params(values: dict) -> dict:
         if name not in PARAMETERS:
             raise ModelConfigError(f"Unknown parameter: {name}. Allowed: {', '.join(PARAMETERS)}")
         if raw is None or (isinstance(raw, str) and raw.strip().lower() in ("", "default", "null")):
+            continue
+        if name == "reasoning_effort":
+            if not isinstance(raw, str) or raw not in REASONING_EFFORTS:
+                raise ModelConfigError(f"Invalid reasoning_effort. Use {', '.join(REASONING_EFFORTS)}.")
+            result[name] = raw
+            continue
+        if name == "chat_template_kwargs":
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except ValueError as exc:
+                    raise ModelConfigError("chat_template_kwargs must be a JSON object.") from exc
+            if not isinstance(raw, dict):
+                raise ModelConfigError("chat_template_kwargs must be a JSON object.")
+            template = {}
+            for key, value in raw.items():
+                if key not in TEMPLATE_PARAMETERS:
+                    raise ModelConfigError(f"Unknown chat_template_kwargs key: {key}.")
+                if value is None or (isinstance(value, str) and value.strip().lower() in ("", "default", "null")):
+                    continue
+                if not isinstance(value, bool):
+                    raise ModelConfigError(f"chat_template_kwargs.{key} must be true or false.")
+                template[key] = value
+            if template:
+                result[name] = template
             continue
         try:
             if isinstance(raw, bool):
@@ -45,10 +74,37 @@ def sampling_params(values: dict) -> dict:
                 raise ValueError
             if name == "presence_penalty" and not -2 <= value <= 2:
                 raise ValueError
+            if name in ("repetition_penalty", "repeat_penalty") and value <= 0:
+                raise ValueError
         except (ValueError, TypeError, OverflowError) as exc:
             raise ModelConfigError(f"Invalid value for {name}: {raw!r}") from exc
         result[name] = value
+    if ("repetition_penalty" in result and "repeat_penalty" in result
+            and result["repetition_penalty"] != result["repeat_penalty"]):
+        raise ModelConfigError("repetition_penalty and repeat_penalty must not have conflicting values.")
     return result
+
+
+def mode_params(values: dict, mode: str) -> dict:
+    params = sampling_params(values)
+    enabled = params.get("chat_template_kwargs", {}).get("enable_thinking")
+    if enabled is not None and enabled != (mode == "thinking"):
+        raise ModelConfigError(f"chat_template_kwargs.enable_thinking conflicts with {mode} mode.")
+    effort = params.get("reasoning_effort")
+    if effort is not None and ((effort == "none") == (mode == "thinking")):
+        raise ModelConfigError(f"reasoning_effort conflicts with {mode} mode. Use /think to switch modes.")
+    return params
+
+
+def request_params(values: dict, reasoning_effort: str | None = None) -> dict:
+    """Convert profile names into LM Studio's OpenAI-compatible wire fields."""
+    params = sampling_params(values)
+    if "repetition_penalty" in params:
+        params["repeat_penalty"] = params.pop("repetition_penalty")
+    # A per-mode field (even explicit null/blank) overrides the legacy fallback.
+    if "reasoning_effort" not in values and reasoning_effort is not None:
+        params.update(sampling_params({"reasoning_effort": reasoning_effort}))
+    return params
 
 
 def read_json(path: Path, default: dict) -> dict:
@@ -99,9 +155,10 @@ class ModelStore:
             if profile.get("type", "unknown") not in MODEL_TYPES:
                 raise ModelConfigError(f"Invalid model type for {model_id}. Use {', '.join(MODEL_TYPES)}.")
             for mode in ("thinking", "non_thinking"):
-                sampling_params(profile.get(mode, {}))
+                mode_params(profile.get(mode, {}), mode)
             effort = profile.get("thinking_effort", "medium")
-            if effort not in ("minimal", "low", "medium", "high", "xhigh"):
+            validated_effort = sampling_params({"reasoning_effort": effort}).get("reasoning_effort")
+            if validated_effort == "none":
                 raise ModelConfigError(f"Invalid thinking_effort for {model_id}.")
         return data
 
@@ -113,8 +170,8 @@ class ModelStore:
                 data["models"][model_id] = {
                     "type": model["type"],
                     "thinking_effort": model.get("thinking_effort", "medium"),
-                    "thinking": dict.fromkeys(PARAMETERS),
-                    "non_thinking": dict.fromkeys(PARAMETERS),
+                    "thinking": dict.fromkeys(SAMPLING_PARAMETERS),
+                    "non_thinking": dict.fromkeys(SAMPLING_PARAMETERS),
                 }
             elif data["models"][model_id].get("type", "unknown") == "unknown":
                 data["models"][model_id]["type"] = model["type"]
@@ -150,10 +207,15 @@ class ModelStore:
         selection = self._selection(user_id, models)
         profile = models[selection["model"]]
         effort = None
+        values = profile.get(selection["mode"], {})
+        parameters = mode_params(values, selection["mode"])
         if profile["type"] != "non_thinking":
-            effort = profile.get("thinking_effort", "medium") if selection["mode"] == "thinking" else "none"
+            effort = (sampling_params({"reasoning_effort": profile.get("thinking_effort", "medium")}).get("reasoning_effort")
+                      if selection["mode"] == "thinking" else "none")
+        if "reasoning_effort" in values:
+            effort = parameters.pop("reasoning_effort", None)
         return {**selection, "type": profile["type"],
-                "parameters": sampling_params(profile.get(selection["mode"], {})),
+                "parameters": parameters,
                 "reasoning_effort": effort}
 
     def select(self, user_id: int, model_id: str) -> None:
@@ -185,9 +247,30 @@ class ModelStore:
             raise ModelConfigError("Use on or off to choose a parameter profile.")
         if current["type"] != "both" and mode != current["mode"]:
             raise ModelConfigError("This model does not support the requested mode.")
-        validated = sampling_params(changes)
         data = self.profiles()
         params = data["models"][current["model"]].setdefault(mode, {})
+        changes = dict(changes)
+        nested = {name: changes.pop(name) for name in list(changes) if name.startswith("chat_template_kwargs.")}
+        if nested:
+            if "chat_template_kwargs" in changes:
+                raise ModelConfigError("Edit chat_template_kwargs as an object or individual keys, not both.")
+            template = sampling_params(params).get("chat_template_kwargs", {})
+            for name, raw in nested.items():
+                key = name.split(".", 1)[1]
+                if isinstance(raw, str) and raw.lower() in ("true", "false"):
+                    raw = raw.lower() == "true"
+                validated = sampling_params({"chat_template_kwargs": {key: raw}}).get("chat_template_kwargs", {})
+                if key in validated:
+                    template[key] = validated[key]
+                else:
+                    template.pop(key, None)
+            changes["chat_template_kwargs"] = template
+        validated = sampling_params(changes)
         for name in changes:
             params[name] = validated.get(name)
+        # Both spellings address the same setting; editing one replaces the old alias.
+        for name, alias in (("repetition_penalty", "repeat_penalty"), ("repeat_penalty", "repetition_penalty")):
+            if name in changes and alias not in changes:
+                params.pop(alias, None)
+        mode_params(params, mode)
         write_json(self.path, data)

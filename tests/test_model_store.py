@@ -81,3 +81,61 @@ def test_unknown_model_requires_manual_capability(store):
 def test_unlimited_tokens_and_zero_values():
     assert sampling_params({'max_tokens': -1, 'top_k': 0, 'temperature': 0}) == {
         'max_tokens': -1, 'top_k': 0, 'temperature': 0}
+
+
+def test_extended_profiles_preserve_metadata_and_reasoning_precedence(store):
+    data = store.profiles()
+    data['official_recommendations_metadata'] = {'note': 'reference only'}
+    profile = data['models']['dual']
+    profile['official_recommendations'] = {'task_presets': {'precise': {'temperature': 0.1}}}
+    profile['thinking_effort'] = 'medium'
+    profile['thinking'] = {'repetition_penalty': 1.05, 'reasoning_effort': 'xhigh',
+                           'chat_template_kwargs': {'enable_thinking': True, 'preserve_thinking': True}}
+    profile['non_thinking'] = {'chat_template_kwargs': {'enable_thinking': False}}
+    store.path.write_text(json.dumps(data), encoding='utf-8')
+    current = store.current(1)
+    assert current['reasoning_effort'] == 'xhigh'
+    assert current['parameters']['repetition_penalty'] == 1.05
+    assert 'reasoning_effort' not in current['parameters']
+    assert 'official_recommendations' not in current['parameters']
+    store.update_params(1, {'chat_template_kwargs.preserve_thinking': 'false'})
+    assert store.current(1)['parameters']['chat_template_kwargs'] == {'enable_thinking': True, 'preserve_thinking': False}
+    store.update_params(1, {'chat_template_kwargs.preserve_thinking': ''})
+    assert store.current(1)['parameters']['chat_template_kwargs'] == {'enable_thinking': True}
+    store.update_params(1, {'reasoning_effort': ''})
+    assert store.current(1)['reasoning_effort'] is None
+    store.set_mode(1, 'non_thinking')
+    assert store.current(1)['reasoning_effort'] == 'none'
+    assert store.current(1)['parameters'] == {'chat_template_kwargs': {'enable_thinking': False}}
+    reloaded = store.profiles()
+    assert reloaded['official_recommendations_metadata'] == data['official_recommendations_metadata']
+    assert reloaded['models']['dual']['official_recommendations'] == profile['official_recommendations']
+
+
+@pytest.mark.parametrize('changes', [
+    {'repetition_penalty': 0}, {'repetition_penalty': -1}, {'repeat_penalty': True},
+    {'repetition_penalty': 'inf'}, {'repetition_penalty': 1, 'repeat_penalty': 1.1},
+    {'reasoning_effort': 'wrong'}, {'reasoning_effort': 'none'},
+    {'chat_template_kwargs': []}, {'chat_template_kwargs': {'enable_thinking': 'false'}},
+    {'chat_template_kwargs': {'enable_thinking': False}},
+    {'chat_template_kwargs.preserve_thinking': '1'}, {'chat_template_kwargs.unknown': True},
+    {'chat_template_kwargs': {}, 'chat_template_kwargs.enable_thinking': True},
+    {'messages': []}, {'stream': False},
+])
+def test_invalid_extended_updates_are_atomic(store, changes):
+    before = store.path.read_bytes()
+    with pytest.raises(ModelConfigError):
+        store.update_params(1, changes)
+    assert store.path.read_bytes() == before
+
+
+def test_alias_updates_and_blank_template_defaults(store):
+    store.update_params(1, {'repetition_penalty': 1.05})
+    store.update_params(1, {'repeat_penalty': 1.2})
+    assert store.current(1)['parameters'] == {'repeat_penalty': 1.2}
+    store.update_params(1, {'repetition_penalty': ''})
+    assert store.current(1)['parameters'] == {}
+    assert sampling_params({'chat_template_kwargs': {'enable_thinking': '', 'preserve_thinking': None}}) == {}
+    assert sampling_params({'chat_template_kwargs': {}}) == {}
+    assert sampling_params({'chat_template_kwargs': {'enable_thinking': False}}) == {
+        'chat_template_kwargs': {'enable_thinking': False}}

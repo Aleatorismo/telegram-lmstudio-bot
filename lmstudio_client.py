@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from config import Settings
-from model_store import sampling_params
+from model_store import REASONING_EFFORTS, request_params
 
 
 class LMStudioError(RuntimeError):
@@ -54,8 +54,9 @@ class LMStudioClient:
                             enabled = [x for x in options if x != "off"]
                             kind = ("both" if "off" in options else "thinking") if enabled else "non_thinking"
                             default = reasoning.get("default")
-                            effort = default if default in ("low", "medium", "high") else next(
-                                (x for x in enabled if x in ("low", "medium", "high")), "medium")
+                            strengths = REASONING_EFFORTS[1:]
+                            effort = default if default in strengths else next(
+                                (x for x in enabled if x in strengths), "medium")
                         models.append({"id": model_id, "type": kind, "thinking_effort": effort})
                     return models
                 except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
@@ -66,7 +67,7 @@ class LMStudioClient:
                    model: str | None = None, parameters: dict | None = None,
                    reasoning_effort: str | None = None) -> str:
         messages = [{"role": "system", "content": self._settings.lmstudio_system_prompt}]
-        messages.extend(history)
+        messages.extend(_history_for_request(history, parameters))
         messages.append({"role": "user", "content": user_message})
 
         payload = {
@@ -74,9 +75,7 @@ class LMStudioClient:
             "messages": messages,
             "stream": False,
         }
-        payload.update(sampling_params(parameters or {}))
-        if reasoning_effort is not None:
-            payload["reasoning_effort"] = reasoning_effort
+        payload.update(request_params(parameters or {}, reasoning_effort))
 
         timeout = httpx.Timeout(
             connect=10.0,
@@ -122,12 +121,10 @@ class LMStudioClient:
         payload = {
             "model": model or self._settings.lmstudio_model,
             "messages": [{"role": "system", "content": self._settings.lmstudio_system_prompt},
-                         *history, {"role": "user", "content": user_message}],
+                         *_history_for_request(history, parameters), {"role": "user", "content": user_message}],
             "stream": True,
-            **sampling_params(parameters or {}),
+            **request_params(parameters or {}, reasoning_effort),
         }
-        if reasoning_effort is not None:
-            payload["reasoning_effort"] = reasoning_effort
         timeout = httpx.Timeout(connect=10, read=self._settings.lmstudio_timeout, write=30, pool=10)
         finished = False
         try:
@@ -169,6 +166,22 @@ class LMStudioClient:
             raise LMStudioError("The LM Studio streaming connection failed.") from exc
         if not finished:
             raise LMStudioError("LM Studio disconnected before completing the reply.")
+
+
+def _history_for_request(history: list[dict[str, str]], parameters: dict | None) -> list[dict[str, str]]:
+    """Replay reasoning using Qwen's documented fields, never as answer content."""
+    params = request_params(parameters or {})
+    preserve = params.get("chat_template_kwargs", {}).get("preserve_thinking") is True
+    messages = []
+    for message in history:
+        item = {"role": message["role"], "content": message["content"]}
+        reasoning = message.get("reasoning_content") or message.get("reasoning")
+        if preserve and item["role"] == "assistant" and isinstance(reasoning, str) and reasoning.strip():
+            # Backends/templates use either name. Both refer to the same reasoning.
+            item["reasoning_content"] = reasoning
+            item["reasoning"] = reasoning
+        messages.append(item)
+    return messages
 
 
 async def _sse_data(response: httpx.Response) -> AsyncIterator[str]:

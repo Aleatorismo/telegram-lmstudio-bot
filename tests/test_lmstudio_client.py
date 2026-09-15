@@ -81,3 +81,58 @@ def test_malformed_chat_response(monkeypatch):
     client = client_with_transport(monkeypatch, lambda r: httpx.Response(200, text='not json'))
     with pytest.raises(LMStudioError):
         asyncio.run(client.chat([], 'hi'))
+
+
+@pytest.mark.parametrize('stream', [False, True])
+@pytest.mark.parametrize('effort', ['xhigh', '', None])
+def test_extended_parameters_reach_both_endpoints(monkeypatch, stream, effort):
+    def handler(request):
+        body = json.loads(request.content)
+        assert body['repeat_penalty'] == 1.05
+        assert 'repetition_penalty' not in body
+        assert body['chat_template_kwargs'] == {'enable_thinking': True, 'preserve_thinking': False}
+        assert body.get('reasoning_effort') == (effort or None)
+        if not effort:
+            assert 'reasoning_effort' not in body
+        assert 'max_tokens' not in body and body['min_p'] == 0
+        assert body['stream'] is stream
+        if stream:
+            return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n')
+        return httpx.Response(200, json={'choices': [{'message': {'content': 'answer'}}]})
+    client = client_with_transport(monkeypatch, handler)
+    params = {'repetition_penalty': 1.05, 'max_tokens': None, 'min_p': 0,
+              'chat_template_kwargs': {'enable_thinking': True, 'preserve_thinking': False},
+              'reasoning_effort': effort}
+    async def run():
+        if stream:
+            deltas = [d async for d in client.stream_chat([], 'hi', parameters=params, reasoning_effort='medium')]
+            assert deltas[0].content == 'answer'
+        else:
+            assert await client.chat([], 'hi', parameters=params, reasoning_effort='medium') == 'answer'
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('stream', [False, True])
+@pytest.mark.parametrize('preserve', [True, False, None, ''])
+def test_reasoning_history_on_wire_obeys_preservation_flag(monkeypatch, stream, preserve):
+    original = [{'role': 'user', 'content': 'question', 'turn_id': 'secret', 'reasoning_content': 'not assistant'},
+                {'role': 'assistant', 'content': 'answer', 'turn_id': 'secret', 'reasoning_content': 'thought'}]
+    def handler(request):
+        body = json.loads(request.content)
+        assert body['messages'][1] == {'role': 'user', 'content': 'question'}
+        expected = {'role': 'assistant', 'content': 'answer'}
+        if preserve is True:
+            expected.update(reasoning_content='thought', reasoning='thought')
+        assert body['messages'][2] == expected
+        if stream:
+            return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"next"}}]}\n\ndata: [DONE]\n\n')
+        return httpx.Response(200, json={'choices': [{'message': {'content': 'next'}}]})
+    client = client_with_transport(monkeypatch, handler)
+    parameters = {'chat_template_kwargs': {'preserve_thinking': preserve, 'enable_thinking': False}}
+    async def run():
+        if stream:
+            assert [d.content async for d in client.stream_chat(original, 'next question', parameters=parameters)] == ['next']
+        else:
+            assert await client.chat(original, 'next question', parameters=parameters) == 'next'
+    asyncio.run(run())
+    assert original[1]['reasoning_content'] == 'thought'

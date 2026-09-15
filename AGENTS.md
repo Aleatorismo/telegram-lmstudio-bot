@@ -56,10 +56,20 @@ There are two distinct local persistence layers:
   Keyed by Telegram `user_id`.
 
 - `CHAT_LOG_DIR`
-  Human-readable per-user `.txt` transcripts.
+  Human-readable per-conversation Markdown transcripts under `<username>_<id>/<start-date>/`.
+  Names are sanitized (full name is the fallback). Established readable folder names remain
+  stable across Telegram name changes. Legacy `user_<id>` folders migrate on that user's
+  next append/undo; existing conversation files and start dates are preserved.
   Intended for inspection, not for context recovery.
 
-`/reset` clears the current user's session memory from `SESSION_STORE_PATH` and appends a reset marker to that user's chat log file.
+`/reset` clears the current user's session memory from `SESSION_STORE_PATH` and calls
+`ChatLogger.end_conversation` to persist a pending reset without creating a file.
+The next recorded exchange creates the new Markdown file, dated at that time.
+Pending resets survive restarts and preserve the user's established directory.
+`CHAT_LOG_DIR/.active_conversations.json` atomically stores active paths by Telegram
+user ID, so logs stay in the same file across midnight and process restarts. Dates
+use the logger timezone (Asia/Shanghai by default). Legacy `.txt` logs are untouched.
+Do not delete session memory when upgrading the log layout.
 
 ## Session Model
 
@@ -83,10 +93,33 @@ One completed turn typically adds two items:
 
 Live chat payload always includes `model`, `messages`, and `stream: true`.
 `LMStudioClient.chat` remains a non-streaming helper; Telegram uses `stream_chat`.
-All six sampling parameters (`temperature`, `max_tokens`, `top_p`, `top_k`,
-`min_p`, `presence_penalty`) come from `model_profiles.json`, keyed by model ID
+Sampling parameters (`temperature`, `max_tokens`, `top_p`, `top_k`,
+`min_p`, `presence_penalty`, `repetition_penalty`) come from `model_profiles.json`, keyed by model ID
 and `thinking` / `non_thinking` mode. Missing, null, or blank values are omitted.
 Legacy sampling environment variables are ignored.
+`repetition_penalty` maps to the LM Studio wire field `repeat_penalty`; the latter
+is also accepted as an alias. Conflicting alias values are rejected. Both chat
+helpers share request_params for validation, omission and mapping.
+Mode profiles also accept reasoning_effort and chat_template_kwargs with boolean
+enable_thinking/preserve_thinking keys. Null/blank values and empty objects are
+omitted; false is retained. Reject controls contradicting the selected profile mode.
+Per-mode reasoning_effort overrides thinking_effort, including explicit null/blank
+to omit it. Absent per-mode fields retain the legacy default/none behavior.
+Template kwargs are forwarded but their backend effects are not guaranteed by
+LM Studio's published Chat Completions parameter list. Completed successful turns
+store reasoning_content separately from answer content in SESSION_STORE_PATH.
+History includes saved reasoning only when the current mode profile explicitly sets
+chat_template_kwargs.preserve_thinking=true (also supported in non-thinking mode).
+Both HTTP helpers replay it in assistant reasoning_content/reasoning fields per
+Qwen's documented format, while filtering turn_id and other local metadata.
+False/missing/null/blank disables replay without deleting saved reasoning. Switching
+models retains per-user history; the newly selected profile controls replay of it.
+Old caches remain valid but have no historical reasoning to replay; never backfill
+from transcript logs or delete context during upgrades. Undo, reset and history
+truncation remove reasoning together with its associated message. Failed/incomplete
+generations must not enter session context. official_recommendations and other reference metadata
+are preserved during edits/discovery and never included in request bodies.
+`/params` supports JSON objects with spaces and dotted template-key edits.
 
 `model_store.py` reloads editable profiles per operation and atomically persists
 profile edits and per-user choices (`model_selections.json`). Types are
@@ -114,7 +147,12 @@ on, normally `medium`). Non-thinking-only models omit this field.
   Drafts explicitly set can_stop=false. Polling only subscribes to message updates.
 - Normal shutdown/restart and timeout cleanup still closes inference connections.
 - `/undo` removes the current user's last retained turn from SESSION_STORE_PATH. It accepts
-  no arguments, never deletes Telegram messages, and leaves transcript logs and presets unchanged.
+  no arguments, never deletes Telegram messages, and leaves presets unchanged. It adds a prominent
+  WITHDRAWN FROM CONTEXT warning to the archived turn while preserving all original text.
+  Generation persists a shared turn_id in session entries and Markdown markers; get_history
+  strips metadata from model requests. Legacy records are matched only when unambiguous;
+  otherwise a withdrawal copy is appended. Archive failures are reported explicitly after
+  context removal; failed context writes must never mark logs.
   Repeated calls walk back through stored turns, including a truncated oldest fragment.
 - `/undo` and `/reset` reject requests while that user's generation is active to avoid stale writes.
 - Keep per-user isolation and atomic persistence under the session-store lock. Undo rolls back

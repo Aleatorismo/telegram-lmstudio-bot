@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 
@@ -118,10 +120,45 @@ def format_settings(current: dict) -> str:
     lines = [f"Model: {current['model']}",
              f"Thinking: {'on' if current['mode'] == 'thinking' else 'off'}",
              f"Supported modes: {current['type'].replace('_', ' ')}"]
-    if current["reasoning_effort"] is not None:
-        lines.append(f"Reasoning effort: {current['reasoning_effort']}")
-    lines.extend(f"{name}: {current['parameters'].get(name, 'LM Studio default')}" for name in PARAMETERS)
+    lines.append(f"Reasoning effort: {current['reasoning_effort'] or 'LM Studio default'}")
+    params = current['parameters']
+    for name in PARAMETERS:
+        if name in ("reasoning_effort", "repeat_penalty"):
+            continue
+        value = params.get(name, params.get('repeat_penalty') if name == 'repetition_penalty' else None)
+        shown = 'LM Studio default' if value is None else json.dumps(value, ensure_ascii=True)
+        lines.append(f"{name}: {shown}")
+    if params.get('chat_template_kwargs'):
+        lines.append("Template kwargs are forwarded; support depends on LM Studio and the model template.")
+    preserve = params.get('chat_template_kwargs', {}).get('preserve_thinking') is True
+    lines.append("Historical thinking replay: " + ("on (when available in saved context)" if preserve else "off"))
     return "\n".join(lines)
+
+
+def parse_parameter_assignments(args: list[str]) -> dict:
+    """Accept ordinary assignments and JSON objects containing whitespace."""
+    text = ' '.join(args)
+    changes = {}
+    while text.strip():
+        text = text.lstrip()
+        match = re.match(r'([A-Za-z_][\w.]*)=', text)
+        if not match or match[1] in changes:
+            raise ModelConfigError("Use unique name=value assignments, separated by spaces.")
+        name = match[1]
+        text = text[match.end():]
+        if text.startswith('{'):
+            try:
+                value, end = json.JSONDecoder().raw_decode(text)
+            except ValueError as exc:
+                raise ModelConfigError(f"Invalid JSON object for {name}.") from exc
+            text = text[end:]
+            if text and not text[0].isspace():
+                raise ModelConfigError("Separate parameter assignments with spaces.")
+        else:
+            end = next((i for i, char in enumerate(text) if char.isspace()), len(text))
+            value, text = text[:end], text[end:]
+        changes[name] = value
+    return changes
 
 
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -183,16 +220,14 @@ async def params_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await reply_with_chunks(update,
                 "Usage: /params [on|off] name=value [name=value ...]\n"
                 "Example: /params on temperature=0.6 max_tokens=4096 top_p=0.95\n"
+                "Example: /params on repetition_penalty=1.05 reasoning_effort=xhigh\n"
+                "Example: /params on chat_template_kwargs.preserve_thinking=true\n"
+                'JSON: /params on chat_template_kwargs={"enable_thinking": true, "preserve_thinking": true}\n'
                 "Use name=, name=null, or name=default to use the LM Studio default.\n"
                 "Without on/off, edits apply to the current mode.\n"
                 "Profiles are shared by all users of this bot.\nParameters: " + ", ".join(PARAMETERS))
             return
-        changes = {}
-        for arg in args:
-            name, sep, value = arg.partition("=")
-            if not sep or name in changes:
-                raise ModelConfigError("Use unique name=value assignments, separated by spaces.")
-            changes[name] = value
+        changes = parse_parameter_assignments(args)
         store = context.application.bot_data["model_store"]
         store.update_params(update.effective_user.id, changes, mode)
         current = store.current(update.effective_user.id)
@@ -229,10 +264,7 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     session_store: SessionStore = context.application.bot_data["session_store"]
     chat_logger: ChatLogger = context.application.bot_data["chat_logger"]
     session_store.clear(update.effective_user.id)
-    chat_logger.append_reset_marker(
-        user_id=update.effective_user.id,
-        display_name=_build_display_name(update),
-    )
+    chat_logger.end_conversation(user_id=update.effective_user.id)
     await update.message.reply_text("Your conversation history has been cleared.")
 
 
@@ -249,9 +281,20 @@ async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if user_id in context.application.bot_data.get("active_generations", {}):
         await update.message.reply_text("Please wait for your current reply to finish before undoing a turn.")
         return
-    removed = context.application.bot_data["session_store"].undo_last_turn(user_id)
+    removed = context.application.bot_data["session_store"].pop_last_turn(user_id)
+    if removed:
+        try:
+            context.application.bot_data["chat_logger"].mark_undone(
+                user_id, _build_display_name(update), removed)
+        except Exception:
+            LOGGER.exception("Could not mark the withdrawn transcript for user %s", user_id)
+            await update.message.reply_text(
+                "Your last turn has been removed from context, but the archive could not be marked. "
+                "Chat messages and archived text are unchanged.")
+            return
     await update.message.reply_text(
-        "Your last turn has been removed from context. Chat messages are unchanged."
+        "Your last turn has been removed from context and marked as withdrawn in the archive. "
+        "Chat messages are unchanged."
         if removed else "There is no conversation context left to undo.")
 
 
@@ -285,7 +328,8 @@ async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                      message_thread_id=getattr(update.message, "message_thread_id", None))
     active[user_id] = job
     job.worker = asyncio.create_task(run_generation(job, context.application, context.bot,
-        user_message=user_message, history=session_store.get_history(user_id), current=current,
+        user_message=user_message, history=session_store.get_history(user_id,
+            preserve_thinking=current['parameters'].get('chat_template_kwargs', {}).get('preserve_thinking') is True), current=current,
         display_name=_build_display_name(update)))
 
 
